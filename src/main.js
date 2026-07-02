@@ -160,3 +160,100 @@ const meshB = firstMeshFrom(bottleGLB.scene);   // Datenquelle B
  *                   lil-gui bekommt Regler für Geschmack.
  * ============================================================================
  */
+
+const particleCount = 200000;
+
+function sampleMeshSurface(mesh, count) {
+  const geometry = mesh.geometry.clone(); //NO MUTATION
+  geometry.applyMatrix4(mesh.matrixWorld);
+
+  const sampler = new MeshSurfaceSampler(new THREE.Mesh(geometry)).build(); // Ergebniss ist ein GEWISCHTTABELLE die ThreeJS zum rendering versteht.
+  const point = new THREE.Vector3();
+  const array = new Float32Array(count * 3);
+
+  for (let i = 0; i < count; i++) {
+    sampler.sample(point);
+    array[i * 3 + 0] = point.x;
+    array[i * 3 + 1] = point.y;
+    array[i * 3 + 2] = point.z;
+  }
+
+  geometry.dispose();
+  return array;
+}
+
+
+function normalizePointCloud(array, targetRadius){
+    const min = new THREE.Vector3(+Infinity, +Infinity, +Infinity)
+    const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity)
+
+    // const box = new THREE.Box3().setFromArray(array)
+    // const center = box.getCenter(new THREE.Vector3())
+    // const size = box.getSize(new THREE.Vector3())
+
+    for(let i = 0; i< array.length; i += 3){
+        min.x = Math.min(min.x, array[i]);      max.x = Math.max(max.x, array[i]);
+        min.y = Math.min(min.y, array[i +1]);   max.y = Math.max(max.y, array[i +1]);
+        min.z = Math.min(min.z, array[i + 2]);  max.z = Math.max(max.z, array[i + 2]);
+    }
+    const center = min.clone().add(max).multiplyScalar(0.5);
+    const size = max.clone().sub(min);
+    const scale = targetRadius / Math.max(size.x, size.y, size.z);
+
+    for(let i = 0; i < array.length; i += 3){
+        array[i] = (array[i] - center.x) * scale;
+        array[i + 1] = (array[i + 1] - center.y) * scale;
+        array[i + 2] = (array[i + 2] - center.z) * scale;
+    }
+}
+
+const pointsA = sampleMeshSurface(meshA, particleCount);
+const pointsB = sampleMeshSurface(meshB, particleCount);
+normalizePointCloud(pointsA, 2.5);
+normalizePointCloud(pointsB, 2.5);
+
+const targetA = instancedArray(pointsA, 'vec3')
+
+const targetB = instancedArray(pointsB, 'vec3')
+const livePositions = instancedArray(new Float32Array(pointsA), 'vec3')
+
+const particleMaterial = new THREE.PointsNodeMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    size: 1.45,
+    sizeAttenuation: true,
+});
+
+particleMaterial.positionNode = livePositions.element(instanceIndex)
+
+particleMaterial.colorNode = mix(
+    color(0x65e9ff),
+    color(0xff9f6e),
+    hash(instanceIndex) //PRO PARTICLE-ID
+)
+
+const particleGeometry = new THREE.BufferGeometry();
+particleGeometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3), 3))
+particleGeometry.drawRange.count = 1;
+const particles = new THREE.Points(particleGeometry, particleMaterial)
+
+particles.count = particleCount;
+
+root.add(particles);
+
+// console.log('NaN-Check A:', pointsA.some(Number.isNaN))
+
+// const debugCloud = new THREE.Points(
+//     new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(pointsA, 3)),
+//     new THREE.PointsMaterial({
+//         size:0.02,
+//         color:0x8be0c8,
+//         transparent:true,
+//         depthWrite:false,
+//         blending: THREE.AdditiveBlending
+//     })
+// )
+
+// root.add(debugCloud);
+// gsap.to(debugCloud.scale, {x:1.15 , y:1.15, z:1.15 , duration: 1.4, yoyo: true, repeat: -1, ease: 'sine.inOut'});
