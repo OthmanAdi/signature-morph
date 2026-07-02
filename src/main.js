@@ -50,6 +50,19 @@ if (WebGPU.isAvailable() === false) {
     throw new Error('WebGPU nicht verfugbar');
 }
 
+// User Params
+const uProgress = uniform(0);
+const uScatter = uniform(0.85);
+const particleCount = 200000;
+
+const gui = new GUI();
+const uColorvariance = uniform(1.0);
+
+const hud = document.createElement('div');
+hud.style.cssText = 'position:fixed;top:14px;padding:8px 12px; border-radius:8px;'+'background:rgba(13, 80, 213, 0.72);border:1px solid rgba(140, 220, 255, 0.28)'+'color:#dffdff; font:700 12px ui-monospace, monospace; z-index:10'
+hud.textContent = `${particleCount.toLocaleString('de-DE')} Partikel - WebGPU`;
+document.body.appendChild(hud);
+
 /* ----------------------------------------------------------------------------
  * MOTOR + BÜHNE  (Grundgerüst aus W1, Renderer-Generation aus W4)
  * ------------------------------------------------------------------------- */
@@ -83,17 +96,6 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();                             // nach jeder aspect-Änderung: Kamera-Mathematik neu
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
-
-/* ----------------------------------------------------------------------------
- * RENDER-LOOP  (W1-Wissen: setAnimationLoop ist das rAF von Three.js)
- * Läuft bewusst schon JETZT, vor den Modellen: leere Bühne ist ein gültiger
- * Zwischenstand. Der Compute-Teil ersetzt diesen Loop später durch eine
- * Version mit renderer.compute(...) pro Frame.
- * ------------------------------------------------------------------------- */
-renderer.setAnimationLoop(() => {
-    controls.update()                   // Damping braucht ein Update pro Frame
-    renderer.render(scene, camera)
-})
 
 /* ----------------------------------------------------------------------------
  * DATENQUELLEN — zwei GLBs laden  (GLTFLoader aus W2, Promise.all aus W1)
@@ -161,8 +163,6 @@ const meshB = firstMeshFrom(bottleGLB.scene);   // Datenquelle B
  * ============================================================================
  */
 
-const particleCount = 200000;
-
 function sampleMeshSurface(mesh, count) {
   const geometry = mesh.geometry.clone(); //NO MUTATION
   geometry.applyMatrix4(mesh.matrixWorld);
@@ -227,11 +227,32 @@ const particleMaterial = new THREE.PointsNodeMaterial({
 
 particleMaterial.positionNode = livePositions.element(instanceIndex)
 
+// particleMaterial.colorNode = mix(
+//     color(0x65e9ff),
+//     color(0xff9f6e),
+//     hash(instanceIndex) //PRO PARTICLE-ID
+// )
+
 particleMaterial.colorNode = mix(
     color(0x65e9ff),
-    color(0xff9f6e),
-    hash(instanceIndex) //PRO PARTICLE-ID
-)
+    color(0x7bceac),
+    hash(instanceIndex).mul(uColorvariance)
+);
+particleMaterial.needsUpdate = true;
+
+const settings = {
+    particleSize: 1.45,
+    restart: () => morphTimline.restart(),
+};
+
+gui.add(uProgress, 'value', 0, 1, 0.01).name('Morphing Fortschritt');
+gui.add(uScatter, 'value', 0,1.6,0.01).name('Streu Weite');
+gui.add(uColorvariance, 'value', 0 , 1, 0.01).name('Farbvarianz');
+gui.add(settings, 'particleSize', 0.5, 3.0, 0.05).name('PunktGroesse').onChange((v)=>{ //cameCase
+    particleMaterial.size = v;
+    particleMaterial.needsUpdate = true;
+})
+gui.add(settings, 'restart').name('Timeline neu starten')
 
 const particleGeometry = new THREE.BufferGeometry();
 particleGeometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(3), 3))
@@ -241,6 +262,46 @@ const particles = new THREE.Points(particleGeometry, particleMaterial)
 particles.count = particleCount;
 
 root.add(particles);
+
+const computeMorph = Fn(()=> { //TSL
+    const start = targetA.element(instanceIndex);
+    const end = targetB.element(instanceIndex);
+    const p = mix(start, end, uProgress).toVar()
+
+    // const scatter = uProgress.mul(float(1).sub(uProgress)).mul(uScatter); //MAX: 0.5
+    const scatter = uProgress.mul(1).sub(uProgress).mul(4).mul(uScatter)
+
+    p.x.addAssign(hash(instanceIndex).sub(0.5).mul(scatter)) //range : -0.5 ... +0.5
+    p.y.addAssign(hash(instanceIndex.add(11)).sub(0.5).mul(scatter).mul(0.65)) // biDirektional Drifting / PRO ACHSE
+    p.z.addAssign(hash(instanceIndex.add(29)).sub(0.5).mul(scatter) )// + 11, +29 damit alles sein form vervollgt und nicht Diagonal gedrifted wird.
+
+    livePositions.element(instanceIndex).assign(p);
+})().compute(particleCount)
+
+const morphTimline = gsap.timeline({
+    repeat: -1,
+    yoyo: true,
+    repeatDelay: 0.9,
+    defaults: {duration: 2.8, ease: 'power2.inOut'},
+});
+morphTimline.to(uProgress, {value: 1}); // Value - Property
+
+// CODE NICHT in MONOLITH zu schreiben. Modulares Design. Leichter aufzubewahren. Separation of Concerns
+
+/* ----------------------------------------------------------------------------
+ * RENDER-LOOP  (W1-Wissen: setAnimationLoop ist das rAF von Three.js)
+ * Läuft bewusst schon JETZT, vor den Modellen: leere Bühne ist ein gültiger
+ * Zwischenstand. Der Compute-Teil ersetzt diesen Loop später durch eine
+ * Version mit renderer.compute(...) pro Frame.
+ * ------------------------------------------------------------------------- */
+renderer.compute(computeMorph); // EINMAL ALLES ALLES IN DEM LIVE-BUFFER Initialisieren
+
+renderer.setAnimationLoop(() => {
+    controls.update()                   // Damping braucht ein Update pro Frame
+    root.rotation.y += 0.001
+    renderer.compute(computeMorph);
+    renderer.render(scene, camera);
+})
 
 // console.log('NaN-Check A:', pointsA.some(Number.isNaN))
 
